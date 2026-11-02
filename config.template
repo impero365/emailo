@@ -1,0 +1,7 @@
+smtp=localhost:25
+smtp_security=plain
+smtp_user=
+smtp_password=
+sender_name=John Doe
+sender_from=john.doe@example.com
+signature=Greetings,\n\n\s\sJohn Doe
