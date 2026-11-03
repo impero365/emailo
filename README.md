@@ -4,9 +4,10 @@ It can only help in creating and sending emails, and was created with the follow
 - quickly composing and sending a short email without leaving the command line (i.e. sending yourself or somebody else a short note or a link)
 
 ### Installation
-Ensure you have installed golang:
+Ensure you have installed golang and make:
 ```
 sudo apt install golang  # Ubuntu
+sudo apt install make
 ```
 Clone the repo, and run:
 ```
