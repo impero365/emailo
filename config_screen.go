@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -9,7 +10,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const configHelp = "^X Save Config | ^T Test Connection"
+const configHelp = "^S Save   ^N New   ^D Delete   ^T Test Connection"
+
+const deleteConfirm = "Confirm deletion? (y/N)"
 
 type connBanner int
 
@@ -78,7 +81,17 @@ func (m *model) openConfig() tea.Cmd {
 	m.cfgFocus = cfgFocusSMTP
 	m.status = ""
 	m.connErr = ""
-	// Width must be set before the values, or a long signature scrolls and hides its start.
+	m.cfgConfirmDelete = false
+	if m.cfgIndex >= 0 && m.cfgIndex < len(m.cfgs) {
+		m.cfgs[m.cfgIndex] = m.cfg
+	}
+	m.loadConfigForm()
+	return m.applyFocus()
+}
+
+// loadConfigForm copies the active config into the fields.
+// Width must be set before the values, or a long signature scrolls and hides its start.
+func (m *model) loadConfigForm() {
 	m.resize()
 	m.cfgSMTP.SetValue(m.cfg.SMTP)
 	m.cfgSMTP.CursorEnd()
@@ -94,17 +107,16 @@ func (m *model) openConfig() tea.Cmd {
 	// Show the signature as it is stored in the file, with \n \t \s left written out.
 	m.cfgSignature.SetValue(escapeConfig(m.cfg.Signature))
 	m.cfgSignature.CursorEnd()
-	return m.applyFocus()
 }
 
-func (m *model) saveConfig() tea.Cmd {
+func (m *model) formConfig() (Config, error) {
 	security := securityChoice(m.cfgSecurity.Value())
 	user := m.cfgUser.Value()
 	password := m.cfgPassword.Value()
 	if security == "plain" {
 		user, password = "", ""
 	}
-	cfg, err := validateConfig(Config{
+	return validateConfig(Config{
 		SenderName:   m.cfgName.Value(),
 		SenderFrom:   m.cfgFrom.Value(),
 		SMTP:         m.cfgSMTP.Value(),
@@ -113,18 +125,84 @@ func (m *model) saveConfig() tea.Cmd {
 		SMTPPassword: password,
 		Signature:    unescapeConfig(m.cfgSignature.Value()),
 	})
+}
+
+func (m *model) saveConfig() tea.Cmd {
+	cfg, err := m.formConfig()
 	if err != nil {
 		m.status = err.Error()
 		return nil
 	}
-	if err := SaveConfig(m.configPath, cfg); err != nil {
+	if m.cfgIndex < 0 || m.cfgIndex >= len(m.cfgs) {
+		m.cfgIndex = 0
+		m.cfgs = []Config{cfg}
+	} else {
+		m.cfgs[m.cfgIndex] = cfg
+	}
+	if err := SaveConfig(m.configPath, m.cfgs); err != nil {
 		m.status = "could not save config: " + err.Error()
 		return nil
 	}
 	m.cfg = cfg
+	m.cfgConfirmDelete = false
 	m.screen = screenCompose
 	m.status = ""
 	m.resize()
+	return m.applyFocus()
+}
+
+func (m *model) addConfig() tea.Cmd {
+	cfg, err := m.formConfig()
+	if err != nil {
+		m.status = err.Error()
+		return nil
+	}
+	if m.cfgIndex < 0 || m.cfgIndex >= len(m.cfgs) {
+		m.cfgs = []Config{cfg}
+		m.cfgIndex = 0
+	} else {
+		m.cfgs[m.cfgIndex] = cfg
+	}
+	m.cfgs = append(m.cfgs, defaultConfig())
+	m.cfgIndex = len(m.cfgs) - 1
+	m.cfg = m.cfgs[m.cfgIndex]
+	m.status = ""
+	m.connErr = ""
+	m.connBanner = connBannerNone
+	m.connTestID++
+	m.cfgFocus = cfgFocusSMTP
+	m.loadConfigForm()
+	return m.applyFocus()
+}
+
+func (m *model) askDeleteConfig() {
+	if len(m.cfgs) < 2 {
+		m.status = "cannot delete the only config"
+		m.cfgConfirmDelete = false
+		return
+	}
+	m.status = ""
+	m.cfgConfirmDelete = true
+}
+
+func (m *model) deleteConfig() tea.Cmd {
+	if len(m.cfgs) < 2 || m.cfgIndex < 0 || m.cfgIndex >= len(m.cfgs) {
+		m.cfgConfirmDelete = false
+		m.status = "cannot delete the only config"
+		return nil
+	}
+	m.cfgs = append(m.cfgs[:m.cfgIndex], m.cfgs[m.cfgIndex+1:]...)
+	if m.cfgIndex >= len(m.cfgs) {
+		m.cfgIndex = len(m.cfgs) - 1
+	}
+	m.cfg = m.cfgs[m.cfgIndex]
+	m.cfgConfirmDelete = false
+	m.status = ""
+	m.connErr = ""
+	m.connBanner = connBannerNone
+	m.connTestID++
+	m.cfgFocus = cfgFocusSMTP
+	m.loadConfigForm()
 	return m.applyFocus()
 }
 
@@ -262,8 +340,24 @@ func (m *model) resizeConfig() {
 	m.cfgSignature.Width = field
 }
 
+func (m *model) configPosLabel() string {
+	n := len(m.cfgs)
+	if n < 1 {
+		n = 1
+	}
+	idx := m.cfgIndex + 1
+	if idx < 1 {
+		idx = 1
+	}
+	if idx > n {
+		idx = n
+	}
+	return fmt.Sprintf("[%d/%d]", idx, n)
+}
+
 func (m *model) configView() string {
 	lines := []string{
+		m.configPosLabel(),
 		m.placeConnBanner(cfgLabel("smtp") + m.cfgSMTP.View()),
 		cfgLabel("smtp_security") + m.securityView(),
 	}
@@ -281,7 +375,11 @@ func (m *model) configView() string {
 	if m.connErr != "" {
 		lines = append(lines, "", connFailedStyle.Render("ERROR: "+oneLine(m.connErr)))
 	}
-	return m.finishView(lines, m.status, configHelp)
+	help := configHelp
+	if m.cfgConfirmDelete {
+		help = deleteConfirm
+	}
+	return m.finishView(lines, m.status, help)
 }
 
 // oneLine keeps a connection error on the single row under the config block.
@@ -342,20 +440,28 @@ func (m *model) placeConnBanner(line string) string {
 	if !ok || m.width <= 0 {
 		return line
 	}
-	badge := style.Render(text)
-	room := m.width - visibleWidth(badge)
+	return placeRight(line, style.Render(text), m.width)
+}
+
+// placeRight keeps text flush with the right edge of width.
+// A later redraw with a new width moves it with the window.
+func placeRight(line, text string, width int) string {
+	if text == "" || width <= 0 {
+		return line
+	}
+	room := width - visibleWidth(text)
 	if room < 1 {
-		return badge
+		return text
 	}
 	line = truncateVisible(line, room-1)
 	if strings.Contains(line, "\x1b") {
 		line += "\x1b[0m"
 	}
-	pad := m.width - visibleWidth(line) - visibleWidth(badge)
+	pad := width - visibleWidth(line) - visibleWidth(text)
 	if pad < 1 {
 		pad = 1
 	}
-	return line + strings.Repeat(" ", pad) + badge
+	return line + strings.Repeat(" ", pad) + text
 }
 
 func visibleWidth(s string) int {

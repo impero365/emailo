@@ -24,10 +24,14 @@ sender_name=Mattia Peronio
 sender_from=noreply@mpero.net
 smtp=smtp.mpero.net:25
 `)
-	cfg, err := LoadConfig(path)
+	cfgs, err := LoadConfig(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(cfgs) != 1 {
+		t.Fatalf("configs: %d", len(cfgs))
+	}
+	cfg := cfgs[0]
 	if cfg.SenderName != "Mattia Peronio" {
 		t.Fatalf("name: %q", cfg.SenderName)
 	}
@@ -43,11 +47,15 @@ smtp=smtp.mpero.net:25
 }
 
 func TestConfigTemplate(t *testing.T) {
-	cfg, err := LoadConfig("config.template")
+	cfgs, err := LoadConfig("config.template")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.SenderName != "John Doe" || cfg.SenderFrom != "john.doe@example.com" || cfg.SMTP != "localhost:25" {
+	if len(cfgs) != 1 {
+		t.Fatalf("configs: %d", len(cfgs))
+	}
+	cfg := cfgs[0]
+	if cfg != defaultConfig() {
 		t.Fatalf("%+v", cfg)
 	}
 	if cfg.Signature != "Greetings,\n\n  John Doe" {
@@ -60,19 +68,21 @@ func TestConfigTemplate(t *testing.T) {
 
 func TestLoadConfigSignature(t *testing.T) {
 	path := writeTemp(t, "sender_name=A\nsender_from=a@b.c\nsmtp=h:25\nsignature=Best regards,\\n\\n\\s\\sMattia Peronio\n")
-	cfg, err := LoadConfig(path)
+	cfgs, err := LoadConfig(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg := cfgs[0]
 	if cfg.Signature != "Best regards,\n\n  Mattia Peronio" {
 		t.Fatalf("signature: %q", cfg.Signature)
 	}
 
 	path = writeTemp(t, "sender_name=A\nsender_from=a@b.c\nsmtp=h:25\n")
-	cfg, err = LoadConfig(path)
+	cfgs, err = LoadConfig(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg = cfgs[0]
 	if cfg.Signature != "" {
 		t.Fatalf("missing signature should be empty, got %q", cfg.Signature)
 	}
@@ -104,7 +114,7 @@ func TestEscapeAndSaveConfig(t *testing.T) {
 		Signature:    "Best regards,\n\n  Mattia Peronio",
 	}
 	path := filepath.Join(t.TempDir(), "config")
-	if err := SaveConfig(path, cfg); err != nil {
+	if err := SaveConfig(path, []Config{cfg}); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(path)
@@ -119,7 +129,7 @@ func TestEscapeAndSaveConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded != cfg {
+	if len(loaded) != 1 || loaded[0] != cfg {
 		t.Fatalf("round trip: %+v", loaded)
 	}
 	fi, err := os.Stat(path)
@@ -141,7 +151,7 @@ func TestSaveConfigPasswordIsPrivate(t *testing.T) {
 		SMTPPassword: "secret",
 	}
 	path := filepath.Join(t.TempDir(), "config")
-	if err := SaveConfig(path, cfg); err != nil {
+	if err := SaveConfig(path, []Config{cfg}); err != nil {
 		t.Fatal(err)
 	}
 	fi, err := os.Stat(path)
@@ -155,8 +165,50 @@ func TestSaveConfigPasswordIsPrivate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.SMTPUser != "user" || loaded.SMTPPassword != "secret" || loaded.SMTPSecurity != "starttls" {
+	if len(loaded) != 1 || loaded[0].SMTPUser != "user" || loaded[0].SMTPPassword != "secret" || loaded[0].SMTPSecurity != "starttls" {
 		t.Fatalf("%+v", loaded)
+	}
+}
+
+func TestLoadSaveMultipleConfigs(t *testing.T) {
+	first := Config{
+		SenderName:   "A",
+		SenderFrom:   "a@b.c",
+		SMTP:         "h:25",
+		SMTPSecurity: "plain",
+		Signature:    "Hi\nthere",
+	}
+	second := defaultConfig()
+	second.SMTPSecurity = "starttls"
+	second.SMTPUser = "user"
+	second.SMTPPassword = "secret"
+	path := filepath.Join(t.TempDir(), "config")
+	if err := SaveConfig(path, []Config{first, second}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "smtp=h:25\nsmtp_security=plain\nsmtp_user=\nsmtp_password=\nsender_name=A\nsender_from=a@b.c\nsignature=Hi\\nthere\n---\nsmtp=localhost:25\nsmtp_security=starttls\nsmtp_user=user\nsmtp_password=secret\nsender_name=John Doe\nsender_from=john.doe@example.com\nsignature=Greetings,\\n\\n\\s\\sJohn Doe\n"
+	if string(body) != want {
+		t.Fatalf("file:\n%s", body)
+	}
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 2 || loaded[0] != first || loaded[1] != second {
+		t.Fatalf("%+v", loaded)
+	}
+
+	_, err = LoadConfig(writeTemp(t, "sender_name=A\nsender_from=a@b.c\nsmtp=h:25\n---\nsender_name=B\nsender_from=b@b.c\nsmtp=not-a-port\n"))
+	if err == nil || !strings.Contains(err.Error(), "host:port") {
+		t.Fatalf("second config: %v", err)
+	}
+	_, err = LoadConfig(writeTemp(t, "# nothing\n"))
+	if err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("empty: %v", err)
 	}
 }
 

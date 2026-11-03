@@ -15,7 +15,7 @@ func main() {
 }
 
 func run(configPath, addressesPath string) int {
-	cfg, err := LoadConfig(configPath)
+	cfgs, err := LoadConfig(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
 		return 1
@@ -26,7 +26,7 @@ func run(configPath, addressesPath string) int {
 		return 1
 	}
 
-	result, err := runTUI(configPath, cfg, addrs)
+	result, err := runTUI(configPath, cfgs, addrs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
 		return 1

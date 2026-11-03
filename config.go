@@ -20,53 +20,91 @@ type Config struct {
 	Signature    string
 }
 
+// defaultConfig is the config shown when a new one is added.
+func defaultConfig() Config {
+	return Config{
+		SenderName:   "John Doe",
+		SenderFrom:   "john.doe@example.com",
+		SMTP:         "localhost:25",
+		SMTPSecurity: "plain",
+		Signature:    "Greetings,\n\n  John Doe",
+	}
+}
+
 // LoadConfig reads a key=value config file. Blank lines and lines starting
-// with # are ignored. sender_name, sender_from, and smtp are required.
+// with # are ignored. A line that is only --- starts another config.
+// A file with one config has no separator, so older files still load.
+// sender_name, sender_from, and smtp are required.
 // smtp_security is plain, starttls, or tls, and defaults to plain.
 // smtp_user and smtp_password are optional and must be set together.
 // signature is optional. In values, \n is a newline, \t is a tab,
 // \s is a space, and \\ is a backslash.
-func LoadConfig(path string) (Config, error) {
+func LoadConfig(path string) ([]Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return Config{}, err
+		return nil, err
 	}
 	defer f.Close()
 
+	var blocks []map[string]string
 	vals := make(map[string]string)
+	flush := func() {
+		if len(vals) == 0 {
+			return
+		}
+		blocks = append(blocks, vals)
+		vals = make(map[string]string)
+	}
+
 	sc := bufio.NewScanner(f)
 	lineNo := 0
 	for sc.Scan() {
 		lineNo++
 		line := strings.TrimSpace(sc.Text())
+		if line == "---" {
+			flush()
+			continue
+		}
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		key, val, ok := strings.Cut(line, "=")
 		if !ok {
-			return Config{}, fmt.Errorf("config line %d: missing '='", lineNo)
+			return nil, fmt.Errorf("config line %d: missing '='", lineNo)
 		}
 		key = strings.TrimSpace(key)
 		val = strings.TrimSpace(val)
 		if key == "" {
-			return Config{}, fmt.Errorf("config line %d: empty key", lineNo)
+			return nil, fmt.Errorf("config line %d: empty key", lineNo)
 		}
 		vals[key] = val
 	}
 	if err := sc.Err(); err != nil {
-		return Config{}, fmt.Errorf("read config: %w", err)
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	flush()
+	if len(blocks) == 0 {
+		return nil, fmt.Errorf("config: empty")
 	}
 
-	cfg := Config{
-		SenderName:   unescapeConfig(vals["sender_name"]),
-		SenderFrom:   unescapeConfig(vals["sender_from"]),
-		SMTP:         unescapeConfig(vals["smtp"]),
-		SMTPSecurity: unescapeConfig(vals["smtp_security"]),
-		SMTPUser:     unescapeConfig(vals["smtp_user"]),
-		SMTPPassword: unescapeConfig(vals["smtp_password"]),
-		Signature:    unescapeConfig(vals["signature"]),
+	cfgs := make([]Config, 0, len(blocks))
+	for _, vals := range blocks {
+		cfg := Config{
+			SenderName:   unescapeConfig(vals["sender_name"]),
+			SenderFrom:   unescapeConfig(vals["sender_from"]),
+			SMTP:         unescapeConfig(vals["smtp"]),
+			SMTPSecurity: unescapeConfig(vals["smtp_security"]),
+			SMTPUser:     unescapeConfig(vals["smtp_user"]),
+			SMTPPassword: unescapeConfig(vals["smtp_password"]),
+			Signature:    unescapeConfig(vals["signature"]),
+		}
+		cfg, err = validateConfig(cfg)
+		if err != nil {
+			return nil, err
+		}
+		cfgs = append(cfgs, cfg)
 	}
-	return validateConfig(cfg)
+	return cfgs, nil
 }
 
 // validateConfig checks the settings a mail needs and returns the cleaned values.
@@ -121,19 +159,29 @@ func validateConfig(cfg Config) (Config, error) {
 }
 
 // SaveConfig rewrites the config file with the known settings.
+// Configs after the first are separated by a --- line.
+// A single config is written without a separator.
 // The file is always readable only by the owner.
-func SaveConfig(path string, cfg Config) error {
+func SaveConfig(path string, cfgs []Config) error {
 	if path == "" {
 		return fmt.Errorf("config path is empty")
 	}
+	if len(cfgs) == 0 {
+		return fmt.Errorf("config: empty")
+	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "smtp=%s\n", escapeConfig(cfg.SMTP))
-	fmt.Fprintf(&b, "smtp_security=%s\n", escapeConfig(cfg.SMTPSecurity))
-	fmt.Fprintf(&b, "smtp_user=%s\n", escapeConfig(cfg.SMTPUser))
-	fmt.Fprintf(&b, "smtp_password=%s\n", escapeConfig(cfg.SMTPPassword))
-	fmt.Fprintf(&b, "sender_name=%s\n", escapeConfig(cfg.SenderName))
-	fmt.Fprintf(&b, "sender_from=%s\n", escapeConfig(cfg.SenderFrom))
-	fmt.Fprintf(&b, "signature=%s\n", escapeConfig(cfg.Signature))
+	for i, cfg := range cfgs {
+		if i > 0 {
+			b.WriteString("---\n")
+		}
+		fmt.Fprintf(&b, "smtp=%s\n", escapeConfig(cfg.SMTP))
+		fmt.Fprintf(&b, "smtp_security=%s\n", escapeConfig(cfg.SMTPSecurity))
+		fmt.Fprintf(&b, "smtp_user=%s\n", escapeConfig(cfg.SMTPUser))
+		fmt.Fprintf(&b, "smtp_password=%s\n", escapeConfig(cfg.SMTPPassword))
+		fmt.Fprintf(&b, "sender_name=%s\n", escapeConfig(cfg.SenderName))
+		fmt.Fprintf(&b, "sender_from=%s\n", escapeConfig(cfg.SenderFrom))
+		fmt.Fprintf(&b, "signature=%s\n", escapeConfig(cfg.Signature))
+	}
 	if err := ensureParent(path); err != nil {
 		return err
 	}

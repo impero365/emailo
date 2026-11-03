@@ -1,4 +1,4 @@
-.PHONY: build clean install
+.PHONY: build clean install test
 
 BUILD_DIR := build
 BINARY := $(BUILD_DIR)/emailo
@@ -11,6 +11,14 @@ build:
 	fi
 	mkdir -p $(BUILD_DIR)
 	go build -o $(BINARY) .
+
+test:
+	@if ! command -v go >/dev/null 2>&1; then \
+		echo "warning: Go is not installed."; \
+		echo "Install Go, then run make test again."; \
+		exit 1; \
+	fi
+	go test ./...
 
 clean:
 	rm -rf $(BUILD_DIR)

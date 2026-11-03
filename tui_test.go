@@ -14,7 +14,7 @@ import (
 )
 
 func readyModel(addrs []string) *model {
-	m := newModel(testConfig(), addrs)
+	m := newModel([]Config{testConfig()}, addrs)
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	return m
 }
@@ -69,15 +69,33 @@ func TestViewHelpPinned(t *testing.T) {
 	if lines[4] != "" {
 		t.Fatalf("blank line under ---: %q", lines[4])
 	}
-	if lines[len(lines)-1] != "^S Send+Exit | ^X Config" {
+	if lines[len(lines)-1] != composeHelp {
 		t.Fatalf("help: %q", lines[len(lines)-1])
+	}
+	if lines[len(lines)-2] != "" {
+		t.Fatalf("status line: %q", lines[len(lines)-2])
+	}
+	if !strings.HasSuffix(lines[0], "smtp.mpero.net:25") || lipgloss.Width(lines[0]) != 80 {
+		t.Fatalf("smtp label: width %d line %q", lipgloss.Width(lines[0]), lines[0])
+	}
+	if !strings.HasSuffix(lines[1], "noreply@mpero.net") || lipgloss.Width(lines[1]) != 80 {
+		t.Fatalf("from label: width %d line %q", lipgloss.Width(lines[1]), lines[1])
+	}
+
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	lines = strings.Split(m.View(), "\n")
+	if !strings.HasSuffix(lines[0], "smtp.mpero.net:25") || lipgloss.Width(lines[0]) != 100 {
+		t.Fatalf("smtp label after resize: width %d line %q", lipgloss.Width(lines[0]), lines[0])
+	}
+	if !strings.HasSuffix(lines[1], "noreply@mpero.net") || lipgloss.Width(lines[1]) != 100 {
+		t.Fatalf("from label after resize: width %d line %q", lipgloss.Width(lines[1]), lines[1])
 	}
 }
 
 func modelWithSignature() *model {
 	cfg := testConfig()
 	cfg.Signature = "Best regards,\n\tMattia Peronio"
-	m := newModel(cfg, nil)
+	m := newModel([]Config{cfg}, nil)
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	return m
 }
@@ -220,7 +238,7 @@ func TestSuggestionEnterFillsTo(t *testing.T) {
 		t.Fatal("enter should move from To to Subject")
 	}
 	lines := strings.Split(m.View(), "\n")
-	if len(lines) != 24 || lines[len(lines)-1] != "^S Send+Exit | ^X Config" {
+	if len(lines) != 24 || lines[len(lines)-1] != composeHelp {
 		t.Fatalf("layout drifted: %d lines, help %q", len(lines), lines[len(lines)-1])
 	}
 }
@@ -306,14 +324,14 @@ func TestCtrlXConfigSave(t *testing.T) {
 		t.Fatal("ctrl+x should open config on smtp")
 	}
 	lines := plainLines(m.View())
-	if len(lines) != 24 || lines[len(lines)-1] != "^X Save Config | ^T Test Connection" {
-		t.Fatalf("help: %q lines %d", lines[len(lines)-1], len(lines))
+	if len(lines) != 24 || lines[0] != "[1/1]" || lines[len(lines)-1] != configHelp {
+		t.Fatalf("help: %q indicator %q lines %d", lines[len(lines)-1], lines[0], len(lines))
 	}
-	smtpCol := strings.Index(lines[0], "smtp.mpero.net:25")
-	secCol := strings.Index(lines[1], "< plain >")
-	nameCol := strings.Index(lines[2], "Mattia Peronio")
-	fromCol := strings.Index(lines[3], "noreply@mpero.net")
-	sigCol := strings.Index(lines[4], `Best regards,\n\n\s\sMattia Peronio`)
+	smtpCol := strings.Index(lines[1], "smtp.mpero.net:25")
+	secCol := strings.Index(lines[2], "< plain >")
+	nameCol := strings.Index(lines[3], "Mattia Peronio")
+	fromCol := strings.Index(lines[4], "noreply@mpero.net")
+	sigCol := strings.Index(lines[5], `Best regards,\n\n\s\sMattia Peronio`)
 	if smtpCol < 0 || smtpCol != secCol || smtpCol != nameCol || smtpCol != fromCol || smtpCol != sigCol {
 		t.Fatalf("columns smtp %d security %d name %d from %d sig %d\n%s", smtpCol, secCol, nameCol, fromCol, sigCol, strings.Join(lines[:6], "\n"))
 	}
@@ -322,7 +340,7 @@ func TestCtrlXConfigSave(t *testing.T) {
 	}
 
 	m.cfgSMTP.SetValue("nope")
-	next, cmd := m.Update(key(tea.KeyCtrlX))
+	next, cmd := m.Update(key(tea.KeyCtrlS))
 	m = next.(*model)
 	if cmd != nil || m.screen != screenConfig || !strings.Contains(m.status, "host:port") {
 		t.Fatalf("invalid smtp should stay open, status %q", m.status)
@@ -331,14 +349,14 @@ func TestCtrlXConfigSave(t *testing.T) {
 		t.Fatal("invalid config was written")
 	}
 
-	next, cmd = m.Update(key(tea.KeyCtrlS))
+	next, cmd = m.Update(key(tea.KeyCtrlX))
 	m = next.(*model)
 	if cmd != nil || m.sending || m.screen != screenConfig {
-		t.Fatal("ctrl+s should do nothing in the config view")
+		t.Fatal("ctrl+x should not save or leave the config view")
 	}
 
 	m.cfgSMTP.SetValue("smtp.example.net:2525")
-	next, _ = m.Update(key(tea.KeyCtrlX))
+	next, _ = m.Update(key(tea.KeyCtrlS))
 	m = next.(*model)
 	if m.screen != screenCompose || m.status != "" {
 		t.Fatalf("save should return to compose, status %q", m.status)
@@ -350,14 +368,17 @@ func TestCtrlXConfigSave(t *testing.T) {
 		t.Fatalf("open message changed: %q", m.body.Value())
 	}
 	view := strings.Split(m.View(), "\n")
-	if view[len(view)-1] != "^S Send+Exit | ^X Config" {
+	if view[len(view)-1] != composeHelp {
 		t.Fatalf("compose help: %q", view[len(view)-1])
+	}
+	if !strings.HasSuffix(view[0], "smtp.example.net:2525") || !strings.HasSuffix(view[1], "noreply@mpero.net") {
+		t.Fatalf("config label:\n%s\n%s", view[0], view[1])
 	}
 	loaded, err := LoadConfig(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.SMTP != "smtp.example.net:2525" || loaded.Signature != "Best regards,\n\n  Mattia Peronio" {
+	if len(loaded) != 1 || loaded[0].SMTP != "smtp.example.net:2525" || loaded[0].Signature != "Best regards,\n\n  Mattia Peronio" {
 		t.Fatalf("saved: %+v", loaded)
 	}
 	saved, err := os.ReadFile(path)
@@ -385,19 +406,19 @@ func TestPasswordIsMasked(t *testing.T) {
 	if m.cfgFocus != cfgFocusPassword {
 		t.Fatal("tab should focus smtp_password")
 	}
-	line := plainLines(m.View())[3]
+	line := plainLines(m.View())[4]
 	if strings.Contains(line, "secret") || !strings.Contains(line, "******") {
 		t.Fatalf("password line: %q", line)
 	}
 	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ab")})
 	m = next.(*model)
-	line = plainLines(m.View())[3]
+	line = plainLines(m.View())[4]
 	if m.cfgPassword.Value() != "secretab" || strings.Contains(line, "secretab") || !strings.Contains(line, "********") {
 		t.Fatalf("value %q line %q", m.cfgPassword.Value(), line)
 	}
 	m.cfgSecurity.SetValue("starttls")
 	m.cfgUser.SetValue("user")
-	next, _ = m.Update(key(tea.KeyCtrlX))
+	next, _ = m.Update(key(tea.KeyCtrlS))
 	m = next.(*model)
 	saved, err := os.ReadFile(path)
 	if err != nil {
@@ -456,13 +477,13 @@ func TestConnectionBanner(t *testing.T) {
 	m.cfg.SMTP = addr
 	next, _ := m.Update(key(tea.KeyCtrlX))
 	m = next.(*model)
-	if plainLines(m.View())[len(plainLines(m.View()))-1] != "^X Save Config | ^T Test Connection" {
+	if plainLines(m.View())[len(plainLines(m.View()))-1] != configHelp {
 		t.Fatalf("help: %q", plainLines(m.View())[len(plainLines(m.View()))-1])
 	}
 
 	next, cmd := m.Update(key(tea.KeyCtrlT))
 	m = next.(*model)
-	top := strings.Split(m.View(), "\n")[0]
+	top := strings.Split(m.View(), "\n")[1]
 	if !strings.Contains(top, "\x1b[94mCONNECTING") || lipgloss.Width(top) != 80 {
 		t.Fatalf("connecting width %d line %q", lipgloss.Width(top), top)
 	}
@@ -471,7 +492,7 @@ func TestConnectionBanner(t *testing.T) {
 	}
 	next, cmd = m.Update(cmd())
 	m = next.(*model)
-	top = strings.Split(m.View(), "\n")[0]
+	top = strings.Split(m.View(), "\n")[1]
 	if !strings.Contains(top, "\x1b[92mCONNECTION OK") || lipgloss.Width(top) != 80 {
 		t.Fatalf("ok width %d line %q", lipgloss.Width(top), top)
 	}
@@ -498,7 +519,7 @@ func TestConnectionBanner(t *testing.T) {
 	}
 	next, cmd = m.Update(cmd())
 	m = next.(*model)
-	top = strings.Split(m.View(), "\n")[0]
+	top = strings.Split(m.View(), "\n")[1]
 	if !strings.Contains(top, "\x1b[91mCONNECTION FAILED") {
 		t.Fatalf("failed line %q", top)
 	}
@@ -548,8 +569,8 @@ func TestSecurityArrows(t *testing.T) {
 	if m.cfgFocus != cfgFocusSecurity {
 		t.Fatal("tab should focus smtp_security")
 	}
-	if !strings.Contains(plainLines(m.View())[1], "< plain >") {
-		t.Fatalf("security line: %q", plainLines(m.View())[1])
+	if !strings.Contains(plainLines(m.View())[2], "< plain >") {
+		t.Fatalf("security line: %q", plainLines(m.View())[2])
 	}
 	if !strings.Contains(m.View(), "\x1b[7m< plain >") {
 		t.Fatal("focused security value should be reverse")
@@ -579,13 +600,13 @@ func TestSecurityArrows(t *testing.T) {
 
 	next, _ = m.Update(key(tea.KeyRight))
 	m = next.(*model)
-	if m.cfgSecurity.Value() != "starttls" || !strings.Contains(plainLines(m.View())[1], "< starttls >") {
-		t.Fatalf("right: %q line %q", m.cfgSecurity.Value(), plainLines(m.View())[1])
+	if m.cfgSecurity.Value() != "starttls" || !strings.Contains(plainLines(m.View())[2], "< starttls >") {
+		t.Fatalf("right: %q line %q", m.cfgSecurity.Value(), plainLines(m.View())[2])
 	}
 	next, _ = m.Update(key(tea.KeyRight))
 	m = next.(*model)
-	if m.cfgSecurity.Value() != "tls" || !strings.Contains(plainLines(m.View())[1], "< tls >") {
-		t.Fatalf("right: %q line %q", m.cfgSecurity.Value(), plainLines(m.View())[1])
+	if m.cfgSecurity.Value() != "tls" || !strings.Contains(plainLines(m.View())[2], "< tls >") {
+		t.Fatalf("right: %q line %q", m.cfgSecurity.Value(), plainLines(m.View())[2])
 	}
 	next, _ = m.Update(key(tea.KeyRight))
 	m = next.(*model)
@@ -633,6 +654,50 @@ func TestEnterAdvancesSingleLineFields(t *testing.T) {
 	}
 }
 
+func TestArrowsCycleComposeFields(t *testing.T) {
+	m := readyModel(nil)
+	next, _ := m.Update(key(tea.KeyDown))
+	m = next.(*model)
+	if !m.subject.Focused() || m.to.Focused() {
+		t.Fatal("down in To should focus Subject")
+	}
+	next, _ = m.Update(key(tea.KeyDown))
+	m = next.(*model)
+	if !m.body.Focused() {
+		t.Fatal("down in Subject should focus Body")
+	}
+	before := m.body.Value()
+	next, _ = m.Update(key(tea.KeyDown))
+	m = next.(*model)
+	next, _ = m.Update(key(tea.KeyUp))
+	m = next.(*model)
+	if !m.body.Focused() || m.body.Value() != before {
+		t.Fatalf("arrows in Body should move inside the message, value %q focused %v", m.body.Value(), m.body.Focused())
+	}
+
+	next, _ = m.Update(key(tea.KeyShiftTab))
+	m = next.(*model)
+	next, _ = m.Update(key(tea.KeyUp))
+	m = next.(*model)
+	if !m.to.Focused() {
+		t.Fatal("up in Subject should focus To")
+	}
+	next, _ = m.Update(key(tea.KeyUp))
+	m = next.(*model)
+	if !m.body.Focused() {
+		t.Fatal("up in To should wrap to Body")
+	}
+
+	m = readyModel([]string{"maria@example.com", "mattia@example.com"})
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ma")})
+	m = next.(*model)
+	next, _ = m.Update(key(tea.KeyDown))
+	m = next.(*model)
+	if !m.to.Focused() || m.suggestIdx != 1 {
+		t.Fatalf("down should move through hints, idx %d focus %d", m.suggestIdx, m.focus)
+	}
+}
+
 func TestTabCyclesFocus(t *testing.T) {
 	m := readyModel(nil)
 	if !m.to.Focused() {
@@ -652,6 +717,144 @@ func TestTabCyclesFocus(t *testing.T) {
 	m = next.(*model)
 	if !m.subject.Focused() {
 		t.Fatal("shift+tab should return to subject")
+	}
+}
+
+func TestAddAndDeleteConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config")
+	m := readyModel(nil)
+	m.configPath = path
+	next, _ := m.Update(key(tea.KeyCtrlX))
+	m = next.(*model)
+
+	next, _ = m.Update(key(tea.KeyCtrlD))
+	m = next.(*model)
+	lines := plainLines(m.View())
+	if lines[len(lines)-1] != configHelp || !strings.Contains(m.status, "only config") || strings.Contains(m.View(), deleteConfirm) {
+		t.Fatalf("only config: status %q help %q", m.status, lines[len(lines)-1])
+	}
+
+	m.cfgSMTP.SetValue("smtp.example.net:2525")
+	next, _ = m.Update(key(tea.KeyCtrlN))
+	m = next.(*model)
+	lines = plainLines(m.View())
+	if lines[0] != "[2/2]" || !strings.Contains(lines[1], "localhost:25") || !strings.Contains(lines[3], "John Doe") || !strings.Contains(lines[4], "john.doe@example.com") || !strings.Contains(lines[5], `Greetings,\n\n\s\sJohn Doe`) {
+		t.Fatalf("new config:\n%s", strings.Join(lines[:6], "\n"))
+	}
+	if m.cfgs[0].SMTP != "smtp.example.net:2525" || m.cfg.SMTP != "localhost:25" {
+		t.Fatalf("list: %+v active %+v", m.cfgs, m.cfg)
+	}
+
+	m.cfgSMTP.SetValue("nope")
+	next, _ = m.Update(key(tea.KeyCtrlN))
+	m = next.(*model)
+	if plainLines(m.View())[0] != "[2/2]" || !strings.Contains(m.status, "host:port") {
+		t.Fatalf("invalid add status %q indicator %q", m.status, plainLines(m.View())[0])
+	}
+	m.cfgSMTP.SetValue("localhost:25")
+
+	next, _ = m.Update(key(tea.KeyCtrlS))
+	m = next.(*model)
+	if m.screen != screenCompose || m.cfg.SenderFrom != "john.doe@example.com" {
+		t.Fatalf("save should return on the new config: %+v", m.cfg)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(saved), "smtp=smtp.example.net:2525\n") || !strings.Contains(string(saved), "---\n") || !strings.Contains(string(saved), "smtp=localhost:25\n") {
+		t.Fatalf("file:\n%s", saved)
+	}
+
+	next, _ = m.Update(key(tea.KeyCtrlX))
+	m = next.(*model)
+	if plainLines(m.View())[0] != "[2/2]" {
+		t.Fatalf("reopen: %q", plainLines(m.View())[0])
+	}
+	next, _ = m.Update(key(tea.KeyCtrlD))
+	m = next.(*model)
+	if plainLines(m.View())[len(plainLines(m.View()))-1] != deleteConfirm {
+		t.Fatalf("confirm: %q", plainLines(m.View())[len(plainLines(m.View()))-1])
+	}
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	m = next.(*model)
+	if plainLines(m.View())[0] != "[2/2]" || plainLines(m.View())[len(plainLines(m.View()))-1] != configHelp {
+		t.Fatal("n should cancel deletion")
+	}
+
+	next, _ = m.Update(key(tea.KeyCtrlD))
+	m = next.(*model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m = next.(*model)
+	lines = plainLines(m.View())
+	if lines[0] != "[1/1]" || !strings.Contains(lines[1], "smtp.example.net:2525") || len(m.cfgs) != 1 {
+		t.Fatalf("after delete: %q %q cfgs %d", lines[0], lines[1], len(m.cfgs))
+	}
+	next, _ = m.Update(key(tea.KeyCtrlS))
+	m = next.(*model)
+	saved, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(saved), "---") || !strings.Contains(string(saved), "smtp=smtp.example.net:2525\n") {
+		t.Fatalf("file:\n%s", saved)
+	}
+	if m.screen != screenCompose || !strings.HasSuffix(plainLines(m.View())[0], "smtp.example.net:2525") || !strings.HasSuffix(plainLines(m.View())[1], "noreply@mpero.net") {
+		t.Fatalf("compose after delete:\n%s\n%s", plainLines(m.View())[0], plainLines(m.View())[1])
+	}
+}
+
+func TestSwitchConfigOnCompose(t *testing.T) {
+	addr, got := startRelay(t)
+	m := readyModel(nil)
+	second := testConfig()
+	second.SMTP = addr
+	second.SenderName = "Other"
+	second.SenderFrom = "other@example.com"
+	m.cfgs = []Config{m.cfg, second}
+	m.to.SetValue("dest@example.com")
+	m.subject.SetValue("Hello")
+	m.body.SetValue("hi")
+	body := m.body.Value()
+
+	lines := plainLines(m.View())
+	if !strings.HasSuffix(lines[0], "smtp.mpero.net:25") || !strings.HasSuffix(lines[1], "noreply@mpero.net") || lines[len(lines)-1] != composeHelp {
+		t.Fatalf("smtp %q from %q help %q", lines[0], lines[1], lines[len(lines)-1])
+	}
+
+	next, _ := m.Update(key(tea.KeyCtrlDown))
+	m = next.(*model)
+	if m.cfg.SMTP != addr || m.cfg.SenderFrom != "other@example.com" || m.body.Value() != body {
+		t.Fatalf("switch: cfg %+v body %q", m.cfg, m.body.Value())
+	}
+	lines = plainLines(m.View())
+	if !strings.HasSuffix(lines[0], addr) || !strings.HasSuffix(lines[1], "other@example.com") || len(lines[0]) != 80 || len(lines[1]) != 80 {
+		t.Fatalf("smtp %q from %q", lines[0], lines[1])
+	}
+
+	next, _ = m.Update(key(tea.KeyCtrlDown))
+	m = next.(*model)
+	if m.cfg.SenderFrom != "noreply@mpero.net" || m.body.Value() != body {
+		t.Fatal("down should wrap to the first config and leave the message")
+	}
+	next, _ = m.Update(key(tea.KeyCtrlUp))
+	m = next.(*model)
+	if m.cfg.SMTP != addr || m.body.Value() != body {
+		t.Fatal("up should wrap to the last config without editing the body")
+	}
+
+	next, cmd := m.Update(key(tea.KeyCtrlS))
+	m = next.(*model)
+	if cmd == nil {
+		t.Fatal("expected send")
+	}
+	msg := cmd().(sentMsg)
+	if msg.err != nil {
+		t.Fatal(msg.err)
+	}
+	sent := waitRelay(t, got)
+	if !strings.Contains(sent, "other@example.com") || !strings.Contains(sent, "hi") {
+		t.Fatalf("relay:\n%s", sent)
 	}
 }
 

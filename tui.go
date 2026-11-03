@@ -58,37 +58,47 @@ type sentMsg struct {
 	err error
 }
 
+const composeHelp = "^S Send+Exit   ^X Config   ^Up/^Down Switch Config"
+
 type model struct {
-	cfg           Config
-	addrs         []string
-	to            textinput.Model
-	subject       textinput.Model
-	body          textarea.Model
-	focus         focus
-	suggestions   []string
-	suggestIdx    int
-	suggestHidden bool
-	status        string
-	sending       bool
-	width         int
-	height        int
-	outcome       outcome
-	configPath    string
-	screen        screen
-	connTestID    int
-	connBanner    connBanner
-	connErr       string
-	cfgFocus      cfgFocus
-	cfgSMTP       textinput.Model
-	cfgSecurity   textinput.Model
-	cfgUser       textinput.Model
-	cfgPassword   textinput.Model
-	cfgName       textinput.Model
-	cfgFrom       textinput.Model
-	cfgSignature  textinput.Model
+	cfg              Config
+	cfgs             []Config
+	cfgIndex         int
+	cfgConfirmDelete bool
+	addrs            []string
+	to               textinput.Model
+	subject          textinput.Model
+	body             textarea.Model
+	focus            focus
+	suggestions      []string
+	suggestIdx       int
+	suggestHidden    bool
+	status           string
+	sending          bool
+	width            int
+	height           int
+	outcome          outcome
+	configPath       string
+	screen           screen
+	connTestID       int
+	connBanner       connBanner
+	connErr          string
+	cfgFocus         cfgFocus
+	cfgSMTP          textinput.Model
+	cfgSecurity      textinput.Model
+	cfgUser          textinput.Model
+	cfgPassword      textinput.Model
+	cfgName          textinput.Model
+	cfgFrom          textinput.Model
+	cfgSignature     textinput.Model
 }
 
-func newModel(cfg Config, addrs []string) *model {
+func newModel(cfgs []Config, addrs []string) *model {
+	if len(cfgs) == 0 {
+		cfgs = []Config{defaultConfig()}
+	}
+	cfg := cfgs[0]
+
 	to := textinput.New()
 	to.Prompt = ""
 	to.Width = 20
@@ -121,6 +131,7 @@ func newModel(cfg Config, addrs []string) *model {
 
 	m := &model{
 		cfg:          cfg,
+		cfgs:         cfgs,
 		addrs:        addrs,
 		to:           to,
 		subject:      subject,
@@ -149,8 +160,8 @@ func (m *model) Init() tea.Cmd {
 	return textinput.Blink
 }
 
-func runTUI(configPath string, cfg Config, addrs []string) (outcome, error) {
-	m := newModel(cfg, addrs)
+func runTUI(configPath string, cfgs []Config, addrs []string) (outcome, error) {
+	m := newModel(cfgs, addrs)
 	m.configPath = configPath
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	final, err := p.Run()
@@ -187,14 +198,23 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			m.outcome = outcome{cancelled: true}
 			return m, tea.Quit
+		}
+		if m.screen == screenConfig && m.cfgConfirmDelete {
+			if msg.String() == "y" || msg.String() == "Y" {
+				return m, m.deleteConfig()
+			}
+			m.cfgConfirmDelete = false
+			return m, nil
+		}
+		switch msg.String() {
 		case "ctrl+x":
 			if m.screen == screenConfig {
-				return m, m.saveConfig()
+				return m, nil
 			}
 			return m, m.openConfig()
 		case "ctrl+s":
 			if m.screen == screenConfig {
-				return m, nil
+				return m, m.saveConfig()
 			}
 			return m.startSend()
 		case "ctrl+t":
@@ -202,6 +222,28 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, m.startConnTest()
+		case "ctrl+n":
+			if m.screen != screenConfig {
+				return m, nil
+			}
+			return m, m.addConfig()
+		case "ctrl+d":
+			if m.screen == screenConfig {
+				m.askDeleteConfig()
+				return m, nil
+			}
+		case "ctrl+up":
+			if m.screen != screenCompose {
+				return m, nil
+			}
+			m.switchConfig(-1)
+			return m, nil
+		case "ctrl+down":
+			if m.screen != screenCompose {
+				return m, nil
+			}
+			m.switchConfig(1)
+			return m, nil
 		}
 		if m.screen == screenConfig {
 			return m.updateConfigKeys(msg)
@@ -226,10 +268,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.moveSuggest(-1)
 				return m, nil
 			}
+			if m.focus != focusBody {
+				m.cycle(-1)
+				return m, m.applyFocus()
+			}
 		case "down":
 			if m.showSuggestions() {
 				m.moveSuggest(1)
 				return m, nil
+			}
+			if m.focus != focusBody {
+				m.cycle(1)
+				return m, m.applyFocus()
 			}
 		case "enter":
 			if m.focus != focusBody {
@@ -456,6 +506,23 @@ func (m *model) fixedChrome() int {
 	return 7
 }
 
+// switchConfig selects another saved config for sending. The message stays as it is.
+func (m *model) switchConfig(dir int) {
+	n := len(m.cfgs)
+	if n == 0 {
+		return
+	}
+	if m.cfgIndex < 0 || m.cfgIndex >= n {
+		m.cfgIndex = 0
+	}
+	m.cfgs[m.cfgIndex] = m.cfg
+	m.cfgIndex = (m.cfgIndex + dir) % n
+	if m.cfgIndex < 0 {
+		m.cfgIndex += n
+	}
+	m.cfg = m.cfgs[m.cfgIndex]
+}
+
 func (m *model) chromeLines() int {
 	n := m.fixedChrome()
 	if m.showSuggestions() {
@@ -475,7 +542,7 @@ func (m *model) View() string {
 }
 
 func (m *model) composeView() string {
-	lines := []string{toLabel() + m.to.View()}
+	lines := []string{placeRight(toLabel()+m.to.View(), m.cfg.SMTP, m.width)}
 	if m.showSuggestions() {
 		rows := m.suggestionRows()
 		for i := 0; i < rows; i++ {
@@ -486,7 +553,7 @@ func (m *model) composeView() string {
 			lines = append(lines, prefix+m.suggestions[i])
 		}
 	}
-	lines = append(lines, subjectLabel+m.subject.View(), "", "---", "")
+	lines = append(lines, placeRight(subjectLabel+m.subject.View(), m.cfg.SenderFrom, m.width), "", "---", "")
 	head := len(lines)
 
 	bodyLines := m.bodyVisualLines()
@@ -496,7 +563,7 @@ func (m *model) composeView() string {
 	}
 	lines = append(lines, bodyLines...)
 
-	help := "^S Send+Exit | ^X Config"
+	help := composeHelp
 	if m.sending {
 		help = "sending…"
 	}
@@ -507,14 +574,20 @@ func (m *model) composeView() string {
 	return m.finishView(lines, status, help)
 }
 
-func (m *model) finishView(lines []string, status, help string) string {
-	for len(lines) < m.height-2 {
+func (m *model) finishView(lines []string, footer ...string) string {
+	reserve := len(footer)
+	if reserve > m.height {
+		footer = footer[len(footer)-m.height:]
+		reserve = m.height
+	}
+	room := m.height - reserve
+	for len(lines) < room {
 		lines = append(lines, "")
 	}
-	if len(lines) > m.height-2 {
-		lines = lines[:m.height-2]
+	if len(lines) > room {
+		lines = lines[:room]
 	}
-	lines = append(lines, status, help)
+	lines = append(lines, footer...)
 	return strings.Join(lines, "\n")
 }
 
